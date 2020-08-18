@@ -9,15 +9,17 @@ using namespace Microsoft::WRL;
 
 #define RETURN_ON_FAIL(expr, ...) \
         { \
-            if (FAILED((expr))) { __debugbreak(); return false; } \
+            if (FAILED((expr))) { return false; } \
         }
 
-bool IsUnderDebugger(ComPtr<EnvDTE::Debugger> debugger, long pid)
+static bool IsUnderDebugger(ComPtr<EnvDTE::Debugger> debugger, long pid)
 {
     ComPtr<EnvDTE::Processes> processes;
-    RETURN_ON_FAIL(debugger->get_DebuggedProcesses(&processes));
+    if (FAILED(debugger->get_DebuggedProcesses(&processes)) || !processes)
+        return false;
     long process_count = 0;
-    RETURN_ON_FAIL(processes->get_Count(&process_count));
+    if (FAILED(processes->get_Count(&process_count)))
+        return false;
     for (long i = 1; i <= process_count; ++i)
     {
         ComPtr<EnvDTE::Process> process;
@@ -91,7 +93,7 @@ static bool AttachTo(long pid)
         }
     }
     if (!main_debugger)
-        return main_debugger = debuggers.front();
+        main_debugger = debuggers.front();
 
     if (IsUnderDebugger(main_debugger, pid))
         return true;
