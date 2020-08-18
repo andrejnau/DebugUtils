@@ -34,7 +34,7 @@ static bool IsUnderDebugger(ComPtr<EnvDTE::Debugger> debugger, long pid)
     return false;
 }
 
-static bool AttachTo(long pid)
+static bool AttachToProcess(long pid)
 {
     RETURN_ON_FAIL(CoInitialize(nullptr));
 
@@ -118,7 +118,7 @@ static bool AttachTo(long pid)
     return false;
 }
 
-inline bool AttachMe()
+inline bool AttachToCurrentProcess()
 {
-    return AttachTo(GetCurrentProcessId());
+    return AttachToProcess(GetCurrentProcessId());
 }
