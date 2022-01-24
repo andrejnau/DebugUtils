@@ -4,13 +4,13 @@
 #pragma warning(pop)
 #include <string>
 #include <vector>
+#include <unordered_map>
+#include <tlhelp32.h>
+#include <atlbase.h>
 #include <wrl.h>
-using namespace Microsoft::WRL;
+using Microsoft::WRL::ComPtr;
 
-#define RETURN_ON_FAIL(expr, ...) \
-        { \
-            if (FAILED((expr))) { return false; } \
-        }
+#define RETURN_ON_FAIL(expr, ...) { if (FAILED((expr))) { return false; } }
 
 static bool IsUnderDebugger(ComPtr<EnvDTE::Debugger> debugger, long pid)
 {
@@ -34,7 +34,21 @@ static bool IsUnderDebugger(ComPtr<EnvDTE::Debugger> debugger, long pid)
     return false;
 }
 
-static bool AttachToProcess(long pid)
+bool IsInProcessTree(const std::unordered_map<uint32_t, uint32_t>& parent, uint32_t root, uint32_t pid)
+{
+    while (pid != root)
+    {
+        auto it = parent.find(pid);
+        if (it == parent.end())
+        {
+            return false;
+        }
+        pid = it->second;
+    }
+    return true;
+}
+
+static bool AttachToProcess(uint32_t pid)
 {
     RETURN_ON_FAIL(CoInitialize(nullptr));
 
@@ -83,12 +97,37 @@ static bool AttachToProcess(long pid)
     if (debuggers.empty())
         return false;
 
-    ComPtr<EnvDTE::Debugger> main_debugger;
-    for (auto& debugger : debuggers)
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE)
+        return false;
+
+    std::unordered_map<uint32_t, uint32_t> parent;
+    PROCESSENTRY32 pe = {};
+    pe.dwSize = sizeof(PROCESSENTRY32);
+    if (Process32First(snapshot, &pe))
     {
-        if (IsUnderDebugger(debugger, GetCurrentProcessId()))
+        do
         {
-            main_debugger = debugger;
+            parent[pe.th32ProcessID] = pe.th32ParentProcessID;
+        } while (Process32Next(snapshot, &pe));
+    }
+    CloseHandle(snapshot);
+
+    ComPtr<EnvDTE::Debugger> main_debugger;
+    for (size_t i = 0; i < debuggers.size(); ++i)
+    {
+        ComPtr<EnvDTE::Window> window;
+        if (FAILED(vs_dtes[i]->get_MainWindow(&window)) || !window)
+        {
+            continue;
+        }
+        HWND handle = {};
+        window->get_HWnd(reinterpret_cast<long*>(&handle));
+        DWORD vs_process_id = 0;
+        GetWindowThreadProcessId(handle, &vs_process_id);
+        if (IsInProcessTree(parent, vs_process_id, pid))
+        {
+            main_debugger = debuggers[i];
             break;
         }
     }
