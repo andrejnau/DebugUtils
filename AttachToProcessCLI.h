@@ -4,6 +4,8 @@
 #include <vector>
 #include <codecvt>
 
+namespace DebugUtils {
+
 std::string MakeCommandLine(const std::string& app_path, const std::vector<std::string>& app_args)
 {
     std::string command_line = app_path;
@@ -68,3 +70,5 @@ inline bool AttachToCurrentProcessCLI(const std::string& app_path)
 {
     return AttachToProcessCLI(app_path, GetCurrentProcessId());
 }
+
+}  // namespace DebugUtils
