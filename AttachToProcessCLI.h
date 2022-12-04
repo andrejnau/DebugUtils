@@ -1,11 +1,13 @@
+#pragma once
 #include <Windows.h>
 #include <array>
 #include <string>
 #include <vector>
+#include <optional>
 
 namespace DebugUtils {
 
-std::string Utf8Encode(const std::wstring& wstr)
+static std::string Utf8Encode(const std::wstring& wstr)
 {
     if (wstr.empty())
         return {};
@@ -15,7 +17,7 @@ std::string Utf8Encode(const std::wstring& wstr)
     return str;
 }
 
-std::wstring Utf8Decode(const std::string& str)
+static std::wstring Utf8Decode(const std::string& str)
 {
     if (str.empty())
         return {};
@@ -25,7 +27,7 @@ std::wstring Utf8Decode(const std::string& str)
     return wstr;
 }
 
-std::string MakeCommandLine(const std::string& app_path, const std::vector<std::string>& app_args)
+static std::string MakeCommandLine(const std::string& app_path, const std::vector<std::string>& app_args)
 {
     std::string command_line = app_path;
     for (const auto& arg : app_args)
@@ -35,7 +37,7 @@ std::string MakeCommandLine(const std::string& app_path, const std::vector<std::
     return command_line;
 }
 
-std::string GetDirectory(const std::string& path)
+static std::string GetDirectory(const std::string& path)
 {
     auto loc = path.find_last_of("\\/");
     if (loc == std::string::npos)
@@ -47,9 +49,14 @@ std::string GetDirectory(const std::string& path)
     return path.substr(0, loc);
 }
 
-bool AttachToProcessCLI(const std::string& app_path, uint32_t pid)
+static bool AttachToProcessCLI(const std::string& app_path, uint32_t pid, const std::optional<std::string>& title_filter)
 {
-    std::wstring command_line = Utf8Decode(MakeCommandLine(app_path, { std::to_string(pid) }));
+    std::vector<std::string> args = { "--attach", std::to_string(pid) };
+    if (title_filter) {
+        args.push_back("--title-filter");
+        args.push_back(*title_filter);
+    }
+    std::wstring command_line = Utf8Decode(MakeCommandLine(app_path, args));
     std::wstring work_directory = Utf8Decode(GetDirectory(app_path));
 
     STARTUPINFOW startup_info = {};
@@ -80,9 +87,9 @@ bool AttachToProcessCLI(const std::string& app_path, uint32_t pid)
     return exit_code == 0;
 }
 
-inline bool AttachToCurrentProcessCLI(const std::string& app_path)
+inline bool AttachToCurrentProcessCLI(const std::string& app_path, const std::optional<std::string>& title_filter = {})
 {
-    return AttachToProcessCLI(app_path, GetCurrentProcessId());
+    return AttachToProcessCLI(app_path, GetCurrentProcessId(), title_filter);
 }
 
 }  // namespace DebugUtils

@@ -1,13 +1,16 @@
+#pragma once
 #pragma warning(push)
 #pragma warning(disable : 4278)
 #import "libid:80cc9f66-e7d8-4ddd-85b6-d9e6cd0e93e2" raw_interfaces_only named_guids
 #pragma warning(pop)
 #include <string>
 #include <vector>
+#include <optional>
 #include <unordered_map>
 #include <tlhelp32.h>
 #include <atlbase.h>
 #include <wrl.h>
+#include "AttachToProcessCLI.h"
 using Microsoft::WRL::ComPtr;
 
 namespace DebugUtils {
@@ -35,7 +38,7 @@ static bool IsUnderDebugger(ComPtr<EnvDTE::Debugger> debugger, long pid)
     return false;
 }
 
-bool IsInProcessTree(const std::unordered_map<uint32_t, uint32_t>& parent, uint32_t root, uint32_t pid)
+static bool IsInProcessTree(const std::unordered_map<uint32_t, uint32_t>& parent, uint32_t root, uint32_t pid)
 {
     while (pid != root)
     {
@@ -47,36 +50,33 @@ bool IsInProcessTree(const std::unordered_map<uint32_t, uint32_t>& parent, uint3
     return true;
 }
 
-static bool AttachToProcess(uint32_t pid)
+static std::vector<ComPtr<EnvDTE::_DTE>> GetVsDte(const std::optional<std::string>& title_filter)
 {
     if (FAILED(CoInitialize(nullptr)))
-        return false;
+        return {};
 
     ComPtr<IMalloc> memory;
     if (FAILED(CoGetMalloc(1, &memory)))
-        return false;
+        return {};
 
     ComPtr<IRunningObjectTable> running_object_table;
     if (FAILED(GetRunningObjectTable(0, &running_object_table)))
-        return false;
+        return {};
 
     ComPtr<IEnumMoniker> moniker_enumerator;
     if (FAILED(running_object_table->EnumRunning(&moniker_enumerator)))
-        return false;
+        return {};
     if (FAILED(moniker_enumerator->Reset()))
-        return false;
+        return {};
 
-    std::vector<ComPtr<IMoniker>> vs_monikers;
-    std::vector<ComPtr<EnvDTE::_DTE>> vs_dtes;
-    std::vector<ComPtr<EnvDTE::Debugger>> debuggers;
+    std::vector<ComPtr<EnvDTE::_DTE>> vs_dte;
     std::wstring vs_prefix = L"!VisualStudio";
     ComPtr<IMoniker> moniker;
     ULONG fetched = 0;
-    while (moniker_enumerator->Next(1, &moniker, &fetched) == S_OK)
-    {
+    while (moniker_enumerator->Next(1, &moniker, &fetched) == S_OK) {
         ComPtr<IBindCtx> ctx;
         if (FAILED(CreateBindCtx(0, &ctx)))
-            return false;
+            return {};
 
         LPOLESTR running_object_name_memory = nullptr;
         if (FAILED(moniker->GetDisplayName(ctx.Get(), nullptr, &running_object_name_memory)))
@@ -92,13 +92,35 @@ static bool AttachToProcess(uint32_t pid)
         ComPtr<EnvDTE::_DTE> dte;
         if (FAILED(running_object.As(&dte)))
             continue;
+
+        if (title_filter) {
+            ComPtr<EnvDTE::Window> window;
+            if (dte->get_MainWindow(&window)) {
+                continue;
+            }
+            HWND handle = {};
+            window->get_HWnd(reinterpret_cast<long*>(&handle));
+            wchar_t buffer[MAX_PATH] = {};
+            GetWindowTextW(handle, buffer, std::size(buffer));
+            std::string title = DebugUtils::Utf8Encode(buffer);
+            if (title.find(*title_filter) == std::string::npos) {
+                continue;
+            }
+        }
+        vs_dte.emplace_back(dte);
+    }
+    return vs_dte;
+}
+
+static bool AttachToProcess(uint32_t pid, const std::optional<std::string>& title_filter = {})
+{
+    std::vector<ComPtr<EnvDTE::_DTE>> vs_dte = GetVsDte(title_filter);
+    std::vector<ComPtr<EnvDTE::Debugger>> debuggers;
+    for (auto& dte : vs_dte) {
         ComPtr<EnvDTE::Debugger> debugger;
         if (FAILED(dte->get_Debugger(&debugger)))
             continue;
-
-        vs_monikers.emplace_back(moniker);
-        vs_dtes.emplace_back(dte);
-        debuggers.emplace_back(debugger);
+        debuggers.push_back(debugger);
     }
 
     if (debuggers.empty())
@@ -127,7 +149,7 @@ static bool AttachToProcess(uint32_t pid)
             return false;
 
         ComPtr<EnvDTE::Window> window;
-        if (FAILED(vs_dtes[i]->get_MainWindow(&window)))
+        if (FAILED(vs_dte[i]->get_MainWindow(&window)))
             continue;
         HWND handle = {};
         window->get_HWnd(reinterpret_cast<long*>(&handle));
@@ -164,9 +186,48 @@ static bool AttachToProcess(uint32_t pid)
     return false;
 }
 
-inline bool AttachToCurrentProcess()
+static bool OpenFile(const std::string& path, int line = -1, const std::optional<std::string>& title_filter = {})
 {
-    return AttachToProcess(GetCurrentProcessId());
+    std::vector<ComPtr<EnvDTE::_DTE>> vs_dte = GetVsDte(title_filter);
+    if (vs_dte.empty()) {
+        return false;
+    }
+    auto dte = vs_dte.front();
+    
+    CComBSTR view_kind(EnvDTE::vsViewKindCode);
+    CComBSTR file_path(path.c_str());
+    ComPtr<EnvDTE::Window> window;
+    dte->OpenFile(view_kind, file_path, &window);
+
+    ComPtr<EnvDTE::Document> doc;
+    window->get_Document(&doc);
+    doc->Activate();
+
+    if (line != -1) {
+        ComPtr<IDispatch> selection;
+        doc->get_Selection(&selection);
+        ComPtr<EnvDTE::TextSelection> text_selection;
+        selection.As(&text_selection);
+        if (text_selection) {
+            text_selection->GotoLine(line, false);
+        } else {
+            return false;
+        }
+    }
+
+    ComPtr<EnvDTE::Window> main_window;
+    if (FAILED(dte->get_MainWindow(&main_window))) {
+        return false;
+    }
+    HWND handle = {};
+    main_window->get_HWnd(reinterpret_cast<long*>(&handle));
+    SetForegroundWindow(handle);
+    return true;
+}
+
+inline bool AttachToCurrentProcess(const std::optional<std::string>& title_filter = {})
+{
+    return AttachToProcess(GetCurrentProcessId(), title_filter);
 }
 
 }  // namespace DebugUtils
